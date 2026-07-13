@@ -259,7 +259,13 @@ Future work could include:
 
 ## 1. Multi-turn Inventory Conversation
 
-> _(Insert screenshot here)_
+![1A. Setting up the Conversation](docs/images/conversation-setup.png)
+
+![1B. Multi-turn Conversation Cell](docs/images/conversation-cell.png)
+
+![1C. Conversation Response 1](docs/images/conversation-response-1.png)
+
+![1D. Conversation Response 2](docs/images/conversation-response-2.png)
 
 Demonstrates:
 
@@ -272,7 +278,7 @@ Demonstrates:
 
 ## 2. Returning User Demonstration
 
-> _(Insert screenshot here)_
+![2. Returning User Response](docs/images/returning-user-response.png)
 
 Shows the assistant recognising a returning user and recalling previous preferences from long-term memory.
 

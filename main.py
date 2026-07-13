@@ -7,6 +7,10 @@ from fastapi import FastAPI
 from models.schemas import ChatRequest, ChatResponse
 from services.inventory import InventoryService
 from services.llm import extract_search_filters
+from services.user_memory import (
+    get_user_profile,
+    save_user_preferences,
+)
 
 app = FastAPI()
 
@@ -62,7 +66,7 @@ def get_requested_position(message):
     return None
 
 
-def search_inventory(message, user_session):
+def search_inventory(user_id, message, user_session):
     """Extract filters with Gemini, search inventory, and store shown results."""
 
     filters = extract_search_filters(message)
@@ -81,6 +85,12 @@ def search_inventory(message, user_session):
             "I could not find any cars matching those requirements. "
             "Try broadening one of your filters."
         )
+    # Save preferences only after a successful search.
+    save_user_preferences(
+        user_id,
+        filters,
+        message,
+    )
 
     displayed_results = results.head(5)
     user_session["last_results"] = displayed_results.to_dict(
@@ -278,6 +288,91 @@ def continue_booking(message, user_session):
         )
 
 
+def is_greeting(message):
+    greetings = [
+        "hi",
+        "hello",
+        "hey",
+        "good morning",
+        "good afternoon",
+        "good evening",
+    ]
+
+    return message.strip().lower() in greetings
+
+
+def build_returning_user_reply(user_id, profile):
+    # Build a readable summary of the user's saved preferences.
+    display_name = user_id.replace("_", " ").title()
+
+    if profile.get("search_summary"):
+        return (
+            f"Welcome back, {display_name}!\n\n"
+            f"Last time, you were looking for "
+            f"{profile['search_summary']}.\n\n"
+            "Would you like to continue that search?"
+        )
+
+    preferences = []
+    keywords = [
+        str(keyword).lower()
+        for keyword in profile.get("keywords", [])
+    ]
+    vehicle_label = "SUVs" if "suv" in keywords else "cars"
+
+    if profile.get("make"):
+        car_type = f"{profile['make'].title()} {vehicle_label}"
+
+        if profile.get("model"):
+            car_type = (
+                f"{profile['make'].title()} "
+                f"{profile['model'].title()} {vehicle_label}"
+            )
+
+        preferences.append(car_type)
+
+    elif profile.get("model"):
+        preferences.append(f"{profile['model'].title()} {vehicle_label}")
+
+    if profile.get("min_year"):
+        preferences.append(
+            f"from {profile['min_year']} onwards"
+        )
+
+    if profile.get("max_year"):
+        preferences.append(
+            f"up to {profile['max_year']}"
+        )
+
+    if profile.get("max_cash_price"):
+        preferences.append(
+            f"under AED {profile['max_cash_price']:,}"
+        )
+
+    if profile.get("keywords"):
+        feature_keywords = [
+            keyword
+            for keyword in keywords
+            if keyword != "suv"
+        ]
+
+        if feature_keywords:
+            preferences.append(f"with {', '.join(feature_keywords)}")
+
+    if not preferences:
+        return (
+            f"Welcome back, {display_name}! "
+            "How can I help with your car search today?"
+        )
+
+    return (
+        f"Welcome back, {display_name}!\n\n"
+        f"Last time, you were looking for: "
+        f"{' '.join(preferences)}.\n\n"
+        "Would you like to continue that search?"
+    )
+
+
 def process_message(user_id, message):
     """Route a user message through memory, booking, lead, or search flow."""
     if user_id not in sessions:
@@ -285,6 +380,7 @@ def process_message(user_id, message):
 
     user_session = sessions[user_id]
 
+    # Active workflows should continue before any new intent is considered.
     if lead_in_progress(user_session):
         return continue_lead(
             user_id,
@@ -296,6 +392,21 @@ def process_message(user_id, message):
         return continue_booking(
             message,
             user_session,
+        )
+
+    # Recognise a returning user when they send a greeting and no workflow is active.
+    if is_greeting(message):
+        profile = get_user_profile(user_id)
+
+        if profile:
+            return build_returning_user_reply(
+                user_id,
+                profile
+            )
+
+        return (
+            f"Hello, {user_id}! "
+            "What kind of car are you looking for?"
         )
 
     if is_booking_request(message):
@@ -358,6 +469,7 @@ def process_message(user_id, message):
         )
 
     return search_inventory(
+        user_id,
         message,
         user_session,
     )
