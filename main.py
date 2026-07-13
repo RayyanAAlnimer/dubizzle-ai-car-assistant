@@ -2,58 +2,71 @@ import csv
 from datetime import datetime
 from pathlib import Path
 
-from dotenv import load_dotenv
 from fastapi import FastAPI
 
 from models.schemas import ChatRequest, ChatResponse
 from services.inventory import InventoryService
 from services.llm import extract_search_filters
 
-# Load environment variables from .env
-load_dotenv()
-
-# Create the FastAPI application
 app = FastAPI()
 
-# Load the inventory once when the server starts
 inventory_service = InventoryService("data/cars.xlsx")
+LEADS_FILE = Path("data/leads.csv")
+AVAILABLE_DAYS = [
+    "monday",
+    "tuesday",
+    "wednesday",
+    "thursday",
+    "friday",
+    "saturday",
+]
+BOOKING_WORDS = [
+    "book",
+    "booking",
+    "schedule",
+    "view",
+    "viewing",
+    "appointment",
+    "test drive",
+]
+POSITIONS = {
+    "first": 0,
+    "second": 1,
+    "third": 2,
+    "fourth": 3,
+    "fifth": 4,
+}
 
-# Store temp. conversation memory for each user
+# Short-term conversation memory keyed by user_id.
 sessions = {}
 
-def get_requested_position(message):
-    # Connect position words to Python list indexes
-    positions = {
-        "first": 0,
-        "second": 1, 
-        "third": 2,
-        "fourth": 3,
-        "fifth": 4,
-    }
 
+def format_car_name(car):
+    """Return a compact readable name for a car listing."""
+    return (
+        f"{car['year']} "
+        f"{car['make']} "
+        f"{car['model']} "
+        f"{car['trim']}"
+    )
+
+
+def get_requested_position(message):
+    """Return the selected result index when the user says first, second, etc."""
     message_lower = message.lower()
 
-    # Check whether the user referred to one of the displayed cars
-    for word, index in positions.items():
+    for word, index in POSITIONS.items():
         if word in message_lower:
-            # Make sure the car exists in the prev. results
             return index
-    
-    # Return nothing if no valid position was mentioned
+
     return None
 
-def search_inventory(message, user_session):
-    """
-    Uses Gemini to extract search filters,
-    searches the inventory,
-    stores the results,
-    and returns a response.
-    """
 
-    # Use Gemini to understand the user's request
+def search_inventory(message, user_session):
+    """Extract filters with Gemini, search inventory, and store shown results."""
+
     filters = extract_search_filters(message)
 
-    # Search the inventory
     results = inventory_service.search(
         make=filters.make,
         model=filters.model,
@@ -63,21 +76,17 @@ def search_inventory(message, user_session):
         keywords=filters.keywords,
     )
 
-    # No matching cars
     if results.empty:
         return (
             "I could not find any cars matching those requirements. "
             "Try broadening one of your filters."
         )
 
-    # Store only the first five cars
     displayed_results = results.head(5)
-
     user_session["last_results"] = displayed_results.to_dict(
         orient="records"
     )
 
-    # Build the reply
     reply = f"I found {len(results)} matching cars:\n\n"
 
     for number, (_, car) in enumerate(
@@ -85,76 +94,47 @@ def search_inventory(message, user_session):
         start=1
     ):
         reply += (
-            f"{number}. "
-            f"{car['year']} "
-            f"{car['make']} "
-            f"{car['model']} "
-            f"{car['trim']}\n"
+            f"{number}. {format_car_name(car)}\n"
         )
 
     return reply
 
-def is_booking_request(message):
-    # Words that indicate the user wants to book a viewing
-    booking_words = [
-        "book",
-        "booking",
-        "schedule",
-        "view",
-        "viewing",
-        "appointment",
-        "test drive",
-    ]
 
+def is_booking_request(message):
+    """Return True when the user appears to want a viewing or test drive."""
     message_lower = message.lower()
 
-    # Return True if any booking word appears in the message
     return any(
         word in message_lower
-        for word in booking_words
+        for word in BOOKING_WORDS
     )
 
+
 def create_session():
-    # Create a new session for a user
+    """Create a fresh in-memory session for one user."""
     return {
-        # Cars shown in the most recent search
         "last_results": [],
-        # Booking info.
         "booking": None,
-        # Lead qualification info.
         "lead": None,
     }
 
+
 def booking_in_progress(user_session):
-    # A booking is active when booking information exists
     return user_session["booking"] is not None
 
+
 def lead_in_progress(user_session):
-    # A lead is active when lead info. exists
     return user_session["lead"] is not None
 
+
 def save_lead(user_id, lead):
-    file_path = Path("data/leads.csv")
-    
-    # Check if the file exists
-    file_exists = file_path.exists()
-
-    # Get the selected car
+    """Append a completed viewing lead to the CSV file."""
+    file_exists = LEADS_FILE.exists()
     car = lead["car"]
-
-    # Create a readable car name
-    car_name = (
-        f"{car['year']}"
-        f"{car['make']}"
-        f"{car['model']}"
-        f"{car['trim']}"
-    )
-
-    # Info. to store in the csv file
     lead_data = {
         "user_id": user_id,
         "listing_id": car["Listing_ID"],
-        "car": car_name,
+        "car": format_car_name(car),
         "budget": lead["budget"],
         "purpose": lead["purpose"],
         "phone": lead["phone"],
@@ -162,29 +142,28 @@ def save_lead(user_id, lead):
         "viewing_time": lead["time"],
     }
 
-    # Open the file in append mode
-    with file_path.open(
+    LEADS_FILE.parent.mkdir(parents=True, exist_ok=True)
+
+    with LEADS_FILE.open(
         mode="a",
         newline="",
-        encoding="utf-8"
+        encoding="utf-8",
     ) as file:
         writer = csv.DictWriter(
             file,
-            fieldnames=lead_data.keys()
+            fieldnames=lead_data.keys(),
         )
 
-        # Add column names only when creating the file
         if not file_exists:
             writer.writeheader()
 
-        # Add the completed lead as a new row
         writer.writerow(lead_data)
 
+
 def continue_lead(user_id, message, user_session):
-    # Get the current lead
+    """Collect budget, purpose, and phone number after a viewing is booked."""
     lead = user_session["lead"]
 
-    # Ask for the budget first
     if lead["budget"] is None:
 
         try:
@@ -204,9 +183,7 @@ def continue_lead(user_id, message, user_session):
             "(For example: Family, Daily commute, Off-road)"
         )
 
-    # Ask for the intended purpose
     if lead["purpose"] is None:
-
         lead["purpose"] = message.strip()
 
         return (
@@ -214,48 +191,30 @@ def continue_lead(user_id, message, user_session):
             "Finally, what is the best phone number "
             "to contact you?"
         )
-    
-    # Ask for the phone number
+
     if lead["phone"] is None:
-
         lead["phone"] = message.strip()
-
-        # Save the completed lead to the csv file
         save_lead(
             user_id,
-            lead
+            lead,
         )
 
-        # Clear the lead workflow after saving
         user_session["lead"] = None
 
         return (
-            "Thank you! your details have been recorded, "
+            "Thank you! Your details have been recorded, "
             "and the viewing request is complete."
         )
 
+
 def continue_booking(message, user_session):
-    # Get the current booking information
+    """Collect viewing day and time, then start lead qualification."""
     booking = user_session["booking"]
-
-    # Days when car viewings are available
-    available_days = [
-        "monday",
-        "tuesday",
-        "wednesday",
-        "thursday",
-        "friday",
-        "saturday",
-    ]
-
     message_lower = message.lower()
 
-    # The booking does not have a day yet
     if booking["day"] is None:
-        # Check whether the user mentioned an available day
-        for day in available_days:
+        for day in AVAILABLE_DAYS:
             if day in message_lower:
-                # Save the selected day
                 booking["day"] = day.title()
 
                 return (
@@ -270,13 +229,11 @@ def continue_booking(message, user_session):
             "Viewings are not available on Sunday."
         )
 
-    # The booking has a day, so now expect a time
     if booking["time"] is None:
         try:
-            # Convert input such as "4 PM" into a time object
             selected_time = datetime.strptime(
                 message.strip().upper(),
-                "%I %p"
+                "%I %p",
             )
 
         except ValueError:
@@ -285,33 +242,24 @@ def continue_booking(message, user_session):
                 "4 PM or 10 AM."
             )
 
-        # Get the hour in 24-hour format
         hour = selected_time.hour
 
-        # Viewings are available from 8 AM to 8 PM
         if hour < 8 or hour > 20:
             return (
                 "That time is outside the available viewing hours. "
                 "Please choose a time between 8 AM and 8 PM."
             )
 
-        # Save the formatted time
         booking["time"] = selected_time.strftime("%I:%M %p")
-
-        # Get the selected car
         selected_car = booking["car"]
 
-        # Store the confirmation before clearing the booking
         confirmation = (
             f"Your viewing has been booked successfully.\n\n"
-            f"Car: {selected_car['year']} "
-            f"{selected_car['make']} "
-            f"{selected_car['model']}\n"
+            f"Car: {format_car_name(selected_car)}\n"
             f"Day: {booking['day']}\n"
             f"Time: {booking['time']}"
         )
 
-        # Start collecting lead info.
         user_session["lead"] = {
             "car": selected_car,
             "day": booking["day"],
@@ -320,7 +268,6 @@ def continue_booking(message, user_session):
             "purpose": None,
             "phone": None,
         }
-        # Booking is complete
         user_session["booking"] = None
 
         return (
@@ -330,58 +277,49 @@ def continue_booking(message, user_session):
             + "What is your budget?"
         )
 
+
 def process_message(user_id, message):
-    # Create memory for the user if this is their first message
+    """Route a user message through memory, booking, lead, or search flow."""
     if user_id not in sessions:
         sessions[user_id] = create_session()
-    
-    # Get the user's stored session
+
     user_session = sessions[user_id]
 
-    # Continue an existing lead qualification
     if lead_in_progress(user_session):
         return continue_lead(
             user_id,
             message,
-            user_session
+            user_session,
         )
 
-    # Continue an existing booking before handling new requests
     if booking_in_progress(user_session):
         return continue_booking(
             message,
-            user_session
+            user_session,
         )
-    
-    # Check whether the user wants to book a viewing
+
     if is_booking_request(message):
         requested_position = get_requested_position(message)
         last_results = user_session["last_results"]
 
-        # The user has not searched for cars yet
         if not last_results:
             return (
                 "Please search for some cars before booking a viewing."
             )
 
-        # The user did not specify which displayed car they want
         if requested_position is None:
             return (
                 "Which car would you like to book? "
                 "Please choose the first, second, third, fourth, or fifth car."
             )
 
-        # The requested position does not exist
         if requested_position >= len(last_results):
             return (
                 f"I only showed you {len(last_results)} cars. "
                 "Please choose one of those results."
             )
 
-        # Get the selected car
         selected_car = last_results[requested_position]
-
-        # Start the booking and store the selected car
         user_session["booking"] = {
             "car": selected_car,
             "day": None,
@@ -389,67 +327,54 @@ def process_message(user_id, message):
         }
 
         return (
-            f"Great. You selected the "
-            f"{selected_car['year']} "
-            f"{selected_car['make']} "
-            f"{selected_car['model']}.\n\n"
+            f"Great. You selected the {format_car_name(selected_car)}.\n\n"
             "What day would you like to view it? "
             "Viewings are available Monday to Saturday."
         )
 
-    # Check if the user mentioned a result position
     requested_position = get_requested_position(message)
 
-    # The user refers to a previously shown car
     if requested_position is not None:
         last_results = user_session["last_results"]
 
-        # The user has not performed a search yet
         if not last_results:
             return (
                 "I do not have any previous search results for you yet. "
                 "Please search for some cars first."
             )
-        
-        # Requested position is outside the displayed results
+
         if requested_position >= len(last_results):
             return (
                 f"I only showed you {len(last_results)} cars. "
                 "Please choose one of those results."
             )
-        
-        # Retrieve the requested car
+
         selected_car = last_results[requested_position]
 
         return (
-            f"The {selected_car['year']} "
-            f"{selected_car['make']} "
-            f"{selected_car['model']} "
-            f"{selected_car['trim']} is listed as:\n\n"
+            f"The {format_car_name(selected_car)} is listed as:\n\n"
             f"{selected_car['title']}\n\n"
             f"{selected_car['description']}"
         )
-    
-    # Perform a new inventory search
+
     return search_inventory(
         message,
-        user_session
+        user_session,
     )
 
 
 @app.get("/")
 def home():
-    # Simple endpoint to check that the API is running
     return {
         "message": "Dubizzle AI Assistant API is running!"
-        }
+    }
+
 
 @app.post("/chat", response_model=ChatResponse)
 def chat(request: ChatRequest):
-    # Pass the user's message to the chatbot logic
     reply = process_message(
         request.user_id,
-        request.message
+        request.message,
     )
 
     return ChatResponse(reply=reply)

@@ -7,18 +7,25 @@ from google.genai import types
 from models.schemas import CarSearchFilters
 
 
-# Load the Gemini API key from .env
 load_dotenv()
 
+client = None
 
-# Create the Gemini client with a finite timeout so SDK/network issues fail fast.
-client = genai.Client(
-    http_options=types.HttpOptions(timeout=20_000)
-)
+
+def get_client():
+    """Create the Gemini client only when it is needed."""
+    global client
+
+    if client is None:
+        client = genai.Client(
+            http_options=types.HttpOptions(timeout=20_000)
+        )
+
+    return client
 
 
 def extract_search_filters(message):
-    # Explain Gemini's limited responsibility
+    """Use Gemini to extract inventory search filters from a user message."""
     prompt = f"""
 You extract search filters for a used-car inventory.
 
@@ -37,8 +44,7 @@ User message:
 {message}
 """
 
-    # Ask Gemini to return JSON matching CarSearchFilters
-    response = client.models.generate_content(
+    response = get_client().models.generate_content(
         model=GEMINI_MODEL,
         contents=prompt,
         config=types.GenerateContentConfig(
@@ -47,7 +53,6 @@ User message:
         ),
     )
 
-    # Prefer the SDK's parsed Pydantic output, with text fallback for older behavior.
     if isinstance(response.parsed, CarSearchFilters):
         filters = response.parsed
     elif response.parsed is not None:
