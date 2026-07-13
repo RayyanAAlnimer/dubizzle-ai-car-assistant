@@ -280,9 +280,9 @@ Shows the assistant recognising a returning user and recalling previous preferen
 
 ## 3. FastAPI Swagger UI
 
-![FastAPI Swagger UI with Example JSON User ID and Message](image.png)
+![FastAPI Swagger UI with example JSON user ID and message](docs/images/swagger-chat-request.png)
 
-![/post Successful Response](image-1.png)
+![FastAPI Swagger UI successful POST response](docs/images/swagger-chat-response.png)
 
 Shows the `/chat` endpoint responding successfully through the FastAPI interactive documentation.
 
